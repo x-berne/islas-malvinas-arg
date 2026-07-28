@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Mapa interactivo en pixel art de las Islas Malvinas creado con HTML5 Canvas y paleta ASCII.">
+  <title>Islas Malvinas Pixel</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      background-color: #000000;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    canvas {
+      display: block;
+      background-color: #000000;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      cursor: cell;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="canvas" role="img" aria-label="Mapa interactivo en pixel art de las Islas Malvinas"></canvas>
+
+  <script>
+    const cols = 54;
+    const rows = 28;
+    const pixelSize = 5;
+    const gap = 1;
+    const step = pixelSize + gap;  // 6px por celda
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    const canvasWidth = cols * step - gap;   // 323px (sin gap final)
+    const canvasHeight = rows * step - gap;  // 167px
+
+    // Adaptación Retina / High-DPI
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvasWidth * dpr;
+    canvas.height = canvasHeight * dpr;
+    canvas.style.width = canvasWidth + 'px';
+    canvas.style.height = canvasHeight + 'px';
+    ctx.scale(dpr, dpr);
+
+    // ═══════════════════════════════════════════════════════════
+    // PALETA DE COLORES — Islas Malvinas (Mapeo 1-a-1 por luminosidad)
+    // ═══════════════════════════════════════════════════════════
+    const malvinasPalette = {
+      ' ': [14, 22, 18],  // Océano (filtrado) (Lum 19.2)
+      '.': [24, 33, 21],  // Costa (Lum 28.9)
+      ':': [39, 46, 26],  // Sombra terrestre (Lum 41.6)
+      '-': [55, 60, 31],  // Turbera (Lum 55.2)
+      '=': [71, 72, 34],  // Tierra media (Lum 67.4)
+      '+': [87, 85, 40],  // Superficie (Lum 80.5)
+      '#': [102, 98, 54],  // Relieve (Lum 94.2)
+      '@': [149, 141, 108]  // Cumbres (Lum 139.6)
+    };
+
+    // Carácter del océano/fondo (se filtra, no se renderiza)
+    const OCEAN = ' ';
+
+    // ═══════════════════════════════════════════════════════════
+    // MAPA ASCII — 54×28 celdas (Densidad: ' ' < '.' < ':' < '-' < '=' < '+' < '#' < '@')
+    // ═══════════════════════════════════════════════════════════
+    const malvinasMap = [
+      '     +                                                ',
+      '      .                                               ',
+      '                                                      ',
+      '                                                      ',
+      '                     . .                              ',
+      '         .   -  =   # ..:=+..     =-                  ',
+      '           :. .  +=....=-..:-      ++:-=-:            ',
+      '            +=: ::..:=..:.-:+=:  ==-+=-:+=-=====      ',
+      '              .+   .=++=+=+++- ====-+=-. -+=====      ',
+      '             :=++++==##+=++==   ===+++===:==++==-:    ',
+      '         :     ==+++#+=#++++   =.++=++==+=-==.        ',
+      '              -  +#++@####-+    +=++=#+#====#+=+=:    ',
+      '               =.++++###+=       =###=====#==++= .    ',
+      '   .        +==. .+=+++#+     :+-++##+##++==##=:      ',
+      '      - +    .= +#++++++..   .++=-++#+++=+#-:.        ',
+      '   # += -    .=.+++++++    :+++++:=++++++++.          ',
+      '    ++++=     ++#=@++@. + =+++++++: :-=:+.            ',
+      '      #+.    + :++++++   +++=++++=#= .                ',
+      '        =-+=++#++== =    .+++++-+++#++  .#            ',
+      '      #+-++#+++=#        -++++=. ++- + --             ',
+      '        +:+#+++:.       =+++++++.    +                ',
+      '         . =+- .      . .++: =+++.                    ',
+      '           =# -        :..+=+ .+-.:                   ',
+      '                       +.  +:                         ',
+      '                       =    :                         ',
+      '                       :-    .                       .',
+      '                              .--                   ..',
+      '                                                      '
+    ];
+
+    const pixels = [];
+
+    // Píxeles de las Islas Malvinas
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const char = malvinasMap[r][c];
+
+        // Omitir píxeles de océano
+        if (char === OCEAN) continue;
+
+        // Resolver color desde la paleta
+        const rgb = malvinasPalette[char];
+
+        const px = c * step;
+        const py = r * step;
+
+        pixels.push({
+          gridCol: c,
+          gridRow: r,
+          x: px,
+          y: py,
+          rgb,
+          delay: Math.random() * 1.5
+        });
+      }
+    }
+
+    // Curva Cinematográfica (Ease-Out Quartic)
+    function easeOutCinematic(x) {
+      return 1 - Math.pow(1 - x, 4);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ESTADO DE LA ANIMACIÓN Y HOVER
+    // 'entering'  → disolución aleatoria de entrada (fade-in)
+    // 'visible'   → islas visibles, esperando click/tap o hover
+    // 'exiting'   → disolución aleatoria de salida (fade-out)
+    // 'hidden'    → canvas vacío, esperando click/tap
+    // ═══════════════════════════════════════════════════════════
+    let state = 'entering';
+    let startTime = null;
+    const duration = 0.5;
+    const maxDelay = 1.5;
+
+    let hoverCol = -1;
+    let hoverRow = -1;
+    let isHovering = false;
+
+    // Asignar nuevos delays aleatorios a todos los píxeles
+    function randomizeDelays() {
+      for (let i = 0; i < pixels.length; i++) {
+        pixels[i].delay = Math.random() * maxDelay;
+      }
+    }
+
+    // Cálculo del incremento de luminosidad por distancia radial (radio = 5 módulos)
+    function getHoverBoost(c, r) {
+      if (!isHovering || hoverCol < 0 || hoverRow < 0) return 0;
+      const dc = c - hoverCol;
+      const dr = r - hoverRow;
+      const dist = Math.sqrt(dc * dc + dr * dr);
+      if (dist > 5) return 0;
+      // Interpolación lineal: d=0 -> +50% (0.50), d=5 -> +10% (0.10)
+      return 0.50 - (dist / 5) * 0.40;
+    }
+
+    // Cálculo de la elevación radial (radio = 5 módulos, centro 3px -> borde 0.6px)
+    function getHoverElev(c, r) {
+      if (!isHovering || hoverCol < 0 || hoverRow < 0) return 0;
+      const dc = c - hoverCol;
+      const dr = r - hoverRow;
+      const dist = Math.sqrt(dc * dc + dr * dr);
+      if (dist > 5) return 0;
+      // Interpolación lineal: d=0 -> 3px, d=5 -> 0.6px
+      return 3.0 - (dist / 5) * 2.4;
+    }
+
+    // Función unificada de dibujado de píxel
+    function drawSinglePixel(p, alpha = 1.0) {
+      const boost = getHoverBoost(p.gridCol, p.gridRow);
+      const elev = getHoverElev(p.gridCol, p.gridRow);
+
+      const r = Math.min(255, Math.round(p.rgb[0] * (1 + boost)));
+      const g = Math.min(255, Math.round(p.rgb[1] * (1 + boost)));
+      const b = Math.min(255, Math.round(p.rgb[2] * (1 + boost)));
+
+      // Sombra proyectada bajo el píxel elevado
+      if (elev > 0) {
+        ctx.fillStyle = alpha < 1.0 
+          ? 'rgba(0, 0, 0, ' + (0.4 * alpha).toFixed(3) + ')' 
+          : 'rgba(0, 0, 0, 0.4)';
+        ctx.fillRect(p.x, p.y, pixelSize, pixelSize);
+      }
+
+      // Píxel elevado en el eje Y
+      ctx.fillStyle = alpha < 1.0 
+        ? 'rgba(' + r + ',' + g + ',' + b + ',' + alpha.toFixed(3) + ')' 
+        : 'rgb(' + r + ',' + g + ',' + b + ')';
+      ctx.fillRect(p.x, p.y - elev, pixelSize, pixelSize);
+    }
+
+    // Redibujado estático cuando el estado es 'visible'
+    function redrawVisible() {
+      if (state !== 'visible') return;
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      for (let i = 0; i < pixels.length; i++) {
+        drawSinglePixel(pixels[i], 1.0);
+      }
+    }
+
+    // Bucle de Renderizado Principal (60 FPS durante transiciones)
+    function render(timestamp) {
+      if (!startTime) startTime = timestamp;
+      const elapsed = (timestamp - startTime) / 1000;
+
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      let allFinished = true;
+
+      for (let i = 0; i < pixels.length; i++) {
+        const p = pixels[i];
+
+        if (elapsed < p.delay) {
+          allFinished = false;
+          // En salida, dibujar píxel completo mientras espera su turno
+          if (state === 'exiting') {
+            drawSinglePixel(p, 1.0);
+          }
+          continue;
+        }
+
+        let progress = (elapsed - p.delay) / duration;
+        if (progress < 1) {
+          allFinished = false;
+        } else {
+          progress = 1;
+        }
+
+        const ease = easeOutCinematic(progress);
+
+        // En entrada: opacidad crece 0→1 | En salida: opacidad decrece 1→0
+        const alpha = state === 'exiting' ? 1 - ease : ease;
+
+        if (alpha > 0.001) {
+          drawSinglePixel(p, alpha);
+        }
+      }
+
+      if (allFinished) {
+        state = state === 'entering' ? 'visible' : 'hidden';
+        if (state === 'visible') {
+          redrawVisible();
+        }
+      } else {
+        requestAnimationFrame(render);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // GESTIÓN DE EVENTOS (DESKTOP MOUSE & MOBILE TOUCH)
+    // ═══════════════════════════════════════════════════════════
+    let touchTimer = null;
+    let isTouchHold = false;
+    let touchStartX = 0;
+    let touchStartY = 0;
+
+    function getCanvasCoords(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      return {
+        col: Math.floor(x / step),
+        row: Math.floor(y / step)
+      };
+    }
+
+    function setHoverPosition(col, row) {
+      if (col !== hoverCol || row !== hoverRow || !isHovering) {
+        hoverCol = col;
+        hoverRow = row;
+        isHovering = true;
+        if (state === 'visible') {
+          requestAnimationFrame(redrawVisible);
+        }
+      }
+    }
+
+    function clearHoverPosition() {
+      if (isHovering) {
+        isHovering = false;
+        hoverCol = -1;
+        hoverRow = -1;
+        if (state === 'visible') {
+          requestAnimationFrame(redrawVisible);
+        }
+      }
+    }
+
+    function triggerToggleAnimation() {
+      if (state === 'visible') {
+        state = 'exiting';
+        randomizeDelays();
+        startTime = null;
+        requestAnimationFrame(render);
+      } else if (state === 'hidden') {
+        state = 'entering';
+        randomizeDelays();
+        startTime = null;
+        requestAnimationFrame(render);
+      }
+    }
+
+    // --- DESKTOP MOUSE EVENTS ---
+    canvas.addEventListener('mousemove', function(e) {
+      const coords = getCanvasCoords(e.clientX, e.clientY);
+      setHoverPosition(coords.col, coords.row);
+    });
+
+    canvas.addEventListener('mouseleave', function() {
+      clearHoverPosition();
+    });
+
+    canvas.addEventListener('click', function(e) {
+      if (isTouchHold) return;
+      triggerToggleAnimation();
+    });
+
+    // --- MOBILE TOUCH EVENTS ---
+    canvas.addEventListener('touchstart', function(e) {
+      if (e.touches.length === 0) return;
+      e.preventDefault();
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      isTouchHold = false;
+
+      const coords = getCanvasCoords(touch.clientX, touch.clientY);
+
+      touchTimer = setTimeout(function() {
+        isTouchHold = true;
+        setHoverPosition(coords.col, coords.row);
+      }, 220);
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', function(e) {
+      if (e.touches.length === 0) return;
+      e.preventDefault();
+      const touch = e.touches[0];
+      const dx = touch.clientX - touchStartX;
+      const dy = touch.clientY - touchStartY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist > 6) {
+        if (!isTouchHold) {
+          isTouchHold = true;
+        }
+        if (touchTimer) {
+          clearTimeout(touchTimer);
+          touchTimer = null;
+        }
+      }
+
+      if (isTouchHold) {
+        const coords = getCanvasCoords(touch.clientX, touch.clientY);
+        setHoverPosition(coords.col, coords.row);
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+
+      if (!isTouchHold) {
+        triggerToggleAnimation();
+      }
+
+      isTouchHold = false;
+      clearHoverPosition();
+    }, { passive: false });
+
+    canvas.addEventListener('touchcancel', function(e) {
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+      isTouchHold = false;
+      clearHoverPosition();
+    });
+
+    // Arrancar animación de entrada
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
